@@ -1,0 +1,236 @@
+
+/* HEADER*/
+
+#define ENABLE 1
+#define DISABLE 0
+void system_init(void)
+    {
+          GIE=ENABLE; //global interrupt
+          PEIE=ENABLE;  //global interrupt 
+          
+          TRISCbits.RC0 = 0; // Indication LED
+          
+          TRISCbits.RC1 = 0; // Warnng LED
+          PORTCbits.RC1 = 0;
+          LATCbits.LC1 = 0;
+          
+          TRISBbits.RB0 = 0;   //Interrupt Pin
+          PORTBbits.RB0 = 1;
+          
+          INTCONbits.INT0IE = 1; //enable particular interrupt
+           INTCONbits.INT0IF = 0; //clearing flag bit
+          INTCON2bits.INTEDG0 = 1;//rising edge trigger
+   }
+
+void can_init(void)                     /*function definition*/
+{
+    TRISBbits.RB3 = ENABLE;             /*configured as CAN_RX (input)*/
+    TRISBbits.RB2 = DISABLE;            /*configured as CAN_TX (output)*/
+    PIE3bits.RXB0IE=ENABLE; // receive buffer interrupt enable bit
+    IPR3bits.RXB0IP=ENABLE;
+                          
+    CANCON |= 0x80;                     /*requests configuration mode*/
+    while(CANSTAT != 0x80);             /*condition checks for configuration mode*/
+    /* Baud rate is 250kHz*/    
+    BRGCON1 = 0xC1;                     /*Sync Jump Width = 4;Baud Rate Pre scaler bits = 4*/
+    BRGCON2 = 0xAE;                     /*Phase Segment 1 Time = 6, Propagation Time = 7*/
+    BRGCON3 = 0x45;                     /*Phase Segment 2 Time = 6*/
+    CIOCON = 0x20;                      /*CANTX pin will drive VDD when recessive*/
+    CANCON = 0x08;                      /*requests normal mode */
+}
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+/*
+ * File:   cruise control.c
+ * Author: Lenovo
+ *
+ * Created on September 22, 2022, 10:05 AM
+ */
+
+
+#include <xc.h>
+#include "config.h"
+#include "init.h"
+#define _XTAL_FREQ 20000000
+
+unsigned char receive,receive_1,can_rec;
+unsigned char can_read_msg[5];
+void warning_led();
+void Transmit_speed();
+unsigned char can_Engine_speed_read();
+void write_CC_Speed(unsigned char ,unsigned);
+void write_CC_Status(unsigned char ,unsigned);
+unsigned char eeprom1_write(const unsigned char ,unsigned char );
+
+void write_CC_Status(unsigned char value,unsigned ID)
+{
+    /*Transmits the status of CC ECU */
+     unsigned char dh,dl;    //This computation divides the ID into TXSIDH and TXSIDH 
+     dh=(ID>>3) & 0xff;
+     dl=(ID<<5) & 0xff;
+     
+     CANCON=0x08; //Normal mode with Transmit Buffer 0;
+
+     TXB0SIDH=dh;  // assigning computed values to TXB0SIDH and TXB0SIDL
+     TXB0SIDL=dl;
+     
+     TXB0DLC=0x01; // Setting DLC
+     
+     TXB0D0=value; //Actual message(status of CC ECU) to be transmitted is assigned
+     TXB0CON=0x08; // Clears the TXABT, TXLARB and TXERR bits
+     CANCON=0x08; //Normal mode with Transmit Buffer 0;
+     
+    
+}
+
+void write_CC_Speed(unsigned char value,unsigned ID)
+{
+    /*Transmits the Formatted speed */
+      unsigned char dh,dl;    //This computation divides the ID into TXSIDH and TXSIDH 
+     dh=(ID>>3) & 0xff;
+     dl=(ID<<5) & 0xff;
+     
+     CANCON=0x08; //Normal mode with Transmit Buffer 0;
+
+     TXB0SIDH=dh;  // assigning computed values to TXB0SIDH and TXB0SIDL
+     TXB0SIDL=dl;
+     
+     TXB0DLC=0x01; // Setting DLC
+     
+     TXB0D0=value; //Actual message(status of CC ECU) to be transmitted is assigned
+     TXB0CON=0x08; // Clears the TXABT, TXLARB and TXERR bits
+     CANCON=0x08; //Normal mode with Transmit Buffer 0;
+}
+
+unsigned char eeprom1_write(const unsigned char address,unsigned char value)
+{
+    /*Writes the speed value into EEPROM memory */
+    INTCONbits.GIE= 0;
+    EEADR = address;  //Assigning address.
+    EEDATA = value; //Assigning Value
+    EECON2 = 0xAA;  
+    EECON2 = 0x55; 
+    EECON1bits.EEPGD = 0; //Access EEPROM 
+    EECON1bits.WR=1; //EEPROM Write Operation completed
+    EECON1bits.WREN = 1; // prevents accidental writes to data EEPROM due to unexpected code execution 
+    PIR2bits.EEIF = 1; //Enable peripheral interrupt
+    while(EECON1bits.WR);
+        INTCONbits.GIE =0;
+       
+    return value; // returning value 
+}
+
+void __interrupt() indication()
+{ /*To set or OFF CC ECU*/
+    __delay_ms(200);
+    if(INTCONbits.INT0IF == 1) //checking the Interrupt 0(RB0) flag status of 
+    {
+        if(LATCbits.LC0 == 0)
+        {   // To Turn ON LED (SET CC ECU) 
+            LATCbits.LC0 = 1;
+            write_CC_Status(0x01,0x64); //Writes the status
+            INTCONbits.INT0IF = 0;  //clearing the flag
+        }
+        else
+        {       
+            // To Turn OFF LED (SET CC ECU) 
+                 LATCbits.LC0 = 0;
+                write_CC_Status(0x00,0x64); //Writes the status
+                INTCONbits.INT0IF = 0; //clearing the flag
+        }
+    }
+    else
+    {
+      ;
+    }
+ }
+
+ unsigned char can_Engine_speed_read()//CAN READ FUNCTION 
+{
+      CANCON = 0x80;  //Configuration mode
+    
+      RXM0SIDL =  RXB0SIDH; //MASK
+      RXM0SIDL =  RXB0SIDL;
+      
+      RXF0SIDL = 0x00;
+      RXF0SIDL = 0x00; //FILTER
+      
+      __delay_ms(1000);
+    CANCON = 0x0C;    //Requests Normal mode and Receive Buffer 0 
+    can_read_msg[0] =  RXB0D0;          //Stores Actual Data.
+    can_read_msg[1] = RXB0DLC;          //Stores DLC
+    can_read_msg[2] = RXB0SIDL;         //Stores SIDL
+    can_read_msg[3] = RXB0SIDH;         //Stores SIDH
+    RXB0CON = 0X00;   
+    CANCON=0x00;     //Normal mode 
+   
+    can_rec =   can_read_msg[0]; 
+    return can_rec;          //Returns the received speed value
+}
+ 
+ void warning_led()
+ {  //To set the Warning LED
+      if(LATCbits.LC0 == 1) //Works only when CC ECU is ON. 
+        { 
+           receive_1 = can_Engine_speed_read(); //storing speed returned 
+            if (receive_1 == 0)
+                {
+                    LATCbits.LC1 = 1; //Turns ON Warning LED
+                    __delay_ms(500);
+                }
+            else
+               {
+                    LATCbits.LC1 = 0; //Turns OFF Warning LED
+                     __delay_ms(500);
+               }
+        }
+ }
+ 
+void Transmit_speed()
+ { /*Here we are storing received speed and giving it as arguments into EEPROM and to Can tx function*/
+       if(LATCbits.LC0 == 0)
+        {  //storing returned speed value
+           receive_1 = can_Engine_speed_read(); //storing returned speed value
+           receive =  eeprom1_write(0x11,receive_1); //value returned from EEPROM
+            INTCONbits.GIE= 1; //Enabling GIE
+            write_CC_Speed( receive_1,0x56); //while CC is OFF received speed given as argument to Transmit function
+            __delay_ms(500);
+        }
+        else
+        {
+            //storing returned speed value
+            receive_1 = can_Engine_speed_read();  //storing returned speed value
+           receive = eeprom1_write(0x11,receive_1); //value returned from EEPROM
+           INTCONbits.GIE= 1;  //Enabling GIE
+            write_CC_Speed(0X85,0x56);  //while CC is ON speed 0x85 given as argument to Transmit function
+            __delay_ms(500);
+        }
+       
+ }
+void main(void) 
+{
+     system_init(); // system initialization function.
+     can_init(); //CAN initialization.
+    while(1)
+    { 
+        receive_1 = can_Engine_speed_read(); //storing speed input received 
+        __delay_ms(3000);
+        warning_led();  //Calls Warning led program
+        Transmit_speed(); //Calling Transmit speed function
+    }
+   return;
+  
+}
+      
+ 
+ 
+
+       
+  
+    
+    
+    
+    
+    
+    
+    
+    
